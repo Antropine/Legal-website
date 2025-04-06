@@ -24,3 +24,4 @@ Route::post('/contact', [ContactController::class, 'store'])->name('contact.stor
 
 Route::get('/calendar', [ConsultationController::class, 'showCalendar'])->name('calendar.show');
 Route::post('/consultation', [ConsultationController::class, 'store'])->name('consultation.store');
+Route::get('/', [ConsultationController::class, 'index'])->name('home');

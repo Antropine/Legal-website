@@ -1,3 +1,8 @@
+@php
+    $currentDate = now(); // Текущая дата
+    $availableDays = 7; // Количество доступных дней (например, 7 дней вперед)
+@endphp
+
 <section id="consultation" class="py-5">
     <div class="container">
         <h2>Записаться на консультацию</h2>
@@ -13,8 +18,23 @@
             </div>
             <div class="mb-3">
                 <label for="scheduled_at" class="form-label">Дата и время консультации</label>
-                <input type="datetime-local" class="form-control" id="scheduled_at" name="scheduled_at" required>
+                <select class="form-control" id="scheduled_at" name="scheduled_at" required>
+                    @foreach(range(0, $availableDays - 1) as $dayOffset)
+                        @php
+                            // Создаём новый объект даты для каждой итерации
+                            $date = now()->addDays($dayOffset)->toDateString();
+                        @endphp
+                        @foreach ($availableSlots as $slot)
+                            @if(Str::endsWith($slot, ':00'))
+                                <option value="{{ $date }}T{{ $slot }}">
+                                    {{ \Carbon\Carbon::parse($date)->format('d.m.Y') }} — {{ $slot }}
+                                </option>
+                            @endif
+                        @endforeach
+                    @endforeach
+                </select>
             </div>
+
             <button type="submit" class="btn btn-primary w-100">Записаться</button>
         </form>
     </div>
@@ -27,3 +47,12 @@
         </iframe>
     </div>
 </section>
+
+<style>
+    .calendar-container iframe {
+        width: 80%; /* устанавливаем ширину */
+        height: 600px; /* устанавливаем высоту */
+        margin: 20px auto; /* отступы сверху и снизу, по центру */
+        display: block; /* выравнивание по центру */
+    }
+</style>

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use Illuminate\View\View;
 use Illuminate\Http\Request;
 use Google\Client;
 use Google\Service\Calendar;
@@ -10,13 +11,12 @@ use App\Models\Consultation;
 
 class ConsultationController extends Controller
 {
-    // Метод для отображения календаря
-    public function showCalendar(Request $request)
+        public function index(): View
     {
-        $date = $request->input('date') ?? now()->toDateString(); // По умолчанию текущая дата
+        $date = now()->toDateString(); // Текущая дата
 
         // Генерация всех временных слотов с интервалом в 30 минут
-        $allSlots = $this->generateTimeSlots('09:00', '18:00', 30);
+        $allSlots = $this->generateTimeSlots('09:00', '20:00', 30);
 
         // Получение занятых слотов из Google Calendar
         $busySlots = $this->getBusySlotsFromGoogleCalendar($date);
@@ -26,16 +26,17 @@ class ConsultationController extends Controller
             return $slot['start'];
         }, $busySlots);
 
+        // Определение свободных слотов
+        $availableSlots = array_diff($allSlots, $busySlotsFormatted);
+
         // Передача данных в шаблон
-        return view('calendar', [
-            'date' => $date,
-            'timeSlots' => $allSlots,
-            'busySlots' => $busySlotsFormatted,
+        return view('home', [
+            'availableSlots' => $availableSlots,
         ]);
     }
 
     // Метод для записи на консультацию
-    public function store(Request $request)
+        public function store(Request $request)
     {
         // Валидация данных
         $validatedData = $request->validate([
@@ -44,14 +45,31 @@ class ConsultationController extends Controller
             'scheduled_at' => 'required|date',
         ]);
 
-        // Преобразование строки в Carbon
-        $validatedData['scheduled_at'] = Carbon::createFromFormat('Y-m-d\TH:i', $request->input('scheduled_at'));
+        // Преобразование строки в объект Carbon
+        $scheduledAt = Carbon::createFromFormat('Y-m-d\TH:i', $request->input('scheduled_at'));
+
+        // Проверяем, свободен ли слот
+        $isSlotBusy = Consultation::where('scheduled_at', $scheduledAt)->exists();
+        if ($isSlotBusy) {
+            return redirect()->back()->withErrors(['scheduled_at' => 'Этот слот уже занят!']);
+        }
 
         // Создание записи в базе данных
-        $consultation = Consultation::create($validatedData);
+        $consultation = Consultation::create([
+            'name' => $validatedData['name'],
+            'email' => $validatedData['email'],
+            'scheduled_at' => $scheduledAt,
+        ]);
 
         // Интеграция с Google Calendar
-        $this->createGoogleCalendarEvent($consultation);
+        $googleEventId = $this->createGoogleCalendarEvent(
+            $consultation->name,
+            $consultation->email,
+            $consultation->scheduled_at
+        );
+
+        // Сохранение ID события в базу данных
+        $consultation->update(['google_event_id' => $googleEventId]);
 
         // Флеш-сообщение об успехе
         return redirect()->back()->with('success', 'Вы успешно записались на консультацию!');
@@ -71,18 +89,23 @@ class ConsultationController extends Controller
         return $slots;
     }
 
-    private function getBusySlotsFromGoogleCalendar($date)
+        private function getBusySlotsFromGoogleCalendar($date)
     {
+        // Инициализация клиента Google API
         $client = new Client();
         $client->setAuthConfig(storage_path('app/google-calendar-credentials.json'));
         $client->addScope(Calendar::CALENDAR_READONLY);
         $client->fetchAccessTokenWithAssertion();
 
+        // Инициализация сервиса Google Calendar
         $service = new Calendar($client);
 
-        $startOfDay = Carbon::parse($date)->startOfDay()->format('Y-m-d\T00:00:00Z');
-        $endOfDay = Carbon::parse($date)->endOfDay()->format('Y-m-d\T23:59:59Z');
+        // Форматирование даты для запроса
+        $startOfDay = Carbon::parse($date)->startOfDay()->toIso8601String();
+        $endOfDay = Carbon::parse($date)->endOfDay()->toIso8601String();
 
+
+        // Получение событий из Google Calendar
         $events = $service->events->listEvents(
             'primary',
             [
@@ -93,6 +116,7 @@ class ConsultationController extends Controller
             ]
         );
 
+        // Форматирование занятых слотов
         $busySlots = [];
         foreach ($events->getItems() as $event) {
             if ($event->getStart() && $event->getStart()->dateTime) {
@@ -106,31 +130,35 @@ class ConsultationController extends Controller
         return $busySlots;
     }
 
-    private function createGoogleCalendarEvent(Consultation $consultation)
-    {
-        $client = new Client();
-        $client->setAuthConfig(storage_path('app/google-calendar-credentials.json'));
-        $client->addScope(Calendar::CALENDAR);
-        $client->fetchAccessTokenWithAssertion();
+        private function createGoogleCalendarEvent($name, $email, $scheduledAt)
+        {
+            // Инициализация клиента Google API
+            $client = new Client();
+            $client->setAuthConfig(storage_path('app/google-calendar-credentials.json'));
+            $client->addScope(Calendar::CALENDAR);
+            $client->fetchAccessTokenWithAssertion();
 
-        $service = new Calendar($client);
+            // Инициализация сервиса Google Calendar
+            $service = new Calendar($client);
 
-        $event = new \Google\Service\Calendar\Event([
-            'summary' => 'Консультация с ' . $consultation->name,
-            'description' => 'Email: ' . $consultation->email,
-            'start' => [
-                'dateTime' => $consultation->scheduled_at->format('Y-m-d\TH:i:s'),
-                'timeZone' => 'UTC',
-            ],
-            'end' => [
-                'dateTime' => $consultation->scheduled_at->addHour()->format('Y-m-d\TH:i:s'),
-                'timeZone' => 'UTC',
-            ],
-        ]);
+            // Создание события
+            $event = new \Google\Service\Calendar\Event([
+                'summary' => 'Консультация с ' . $name,
+                'description' => 'Email: ' . $email,
+                'start' => [
+                    'dateTime' => $scheduledAt->format('Y-m-d\TH:i:s'),
+                    'timeZone' => 'Europe/Moscow', // Укажите ваш часовой пояс
+                ],
+                'end' => [
+                    'dateTime' => $scheduledAt->addHour()->format('Y-m-d\TH:i:s'), // Консультация длится 1 час
+                    'timeZone' => 'Europe/Moscow',
+                ],
+            ]);
 
-        $calendarId = 'primary';
-        $googleEvent = $service->events->insert($calendarId, $event);
+            // Добавление события в календарь
+            $calendarId = 'sonya.konovalova.04@gmail.com'; // Используем основной календарь
+            $googleEvent = $service->events->insert($calendarId, $event);
 
-        $consultation->update(['google_event_id' => $googleEvent->id]);
-    }
+            return $googleEvent->id; // Возвращаем ID созданного события
+        }
 }
